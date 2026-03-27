@@ -355,9 +355,9 @@ class GameEngine {
         floorBody.quaternion.setFromAxisAngle(new CANNON.Vec3(1,0,0), -Math.PI/2);
         this.world.addBody(floorBody);
 
-        // 3. Hoop (Rim) - Adjusted to be LOWER and MUCH CLOSER
+        // 3. Hoop (Rim) - Pushed back slightly to a comfortable middle distance
         this.hoopY = 2.2; 
-        this.hoopZ = -1.5; // Made much closer (Originally -2.8, before that -3.9)
+        this.hoopZ = -2.2; // Originally -1.5 (too close), before that -3.9
         this.hoopRadius = 0.25;
 
         // 2. Backboard - Moved accordingly based on new hoop coordinates
@@ -366,7 +366,7 @@ class GameEngine {
             color: 0xffffff, transparent: true, opacity: 0.7, roughness: 0.1 
         });
         const bbMesh = new THREE.Mesh(bbGeo, bbMat);
-        bbMesh.position.set(0, 2.7, -2.1);
+        bbMesh.position.set(0, 2.7, -2.8);
         bbMesh.castShadow = true;
         this.scene.add(bbMesh);
 
@@ -382,13 +382,13 @@ class GameEngine {
         const targetGeo = new THREE.PlaneGeometry(0.6, 0.45);
         const targetMat = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide });
         const targetMesh = new THREE.Mesh(targetGeo, targetMat);
-        targetMesh.position.set(0, 2.4, -2.04);
+        targetMesh.position.set(0, 2.4, -2.74);
         this.scene.add(targetMesh);
 
         const innerTargetGeo = new THREE.PlaneGeometry(0.55, 0.4);
         const innerTargetMat = new THREE.MeshBasicMaterial({ color: 0x222222, side: THREE.DoubleSide });
         const innerTargetMesh = new THREE.Mesh(innerTargetGeo, innerTargetMat);
-        innerTargetMesh.position.set(0, 2.4, -2.03);
+        innerTargetMesh.position.set(0, 2.4, -2.73);
         this.scene.add(innerTargetMesh);
 
         // Render Hoop
@@ -417,7 +417,7 @@ class GameEngine {
         const bracketGeo = new THREE.BoxGeometry(0.1, 0.1, 0.4);
         const bracketMat = new THREE.MeshStandardMaterial({ color: 0x333333 });
         const bracketMesh = new THREE.Mesh(bracketGeo, bracketMat);
-        bracketMesh.position.set(0, this.hoopY, -1.85);
+        bracketMesh.position.set(0, this.hoopY, -2.55);
         this.scene.add(bracketMesh);
 
         // 4. Basketball
@@ -475,8 +475,8 @@ class GameEngine {
         const uiMat = new THREE.MeshBasicMaterial({ map: this.uiTexture, transparent: true });
         this.uiMesh = new THREE.Mesh(uiGeo, uiMat);
         
-        // Place the scoreboard above and slightly behind the new lower backboard
-        this.uiMesh.position.set(0, 4.2, -2.2); 
+        // Place the scoreboard above and slightly behind the new backboard
+        this.uiMesh.position.set(0, 4.2, -2.9); 
         this.scene.add(this.uiMesh);
     }
 
