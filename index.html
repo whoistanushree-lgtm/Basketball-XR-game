@@ -34,8 +34,13 @@
     <div id="game-container"></div>
     
     <!-- UI Layer -->
-    <div id="ui-layer" class="flex flex-col items-center justify-center p-4 sm:p-6 text-white pointer-events-none">
-        <div class="glass-panel p-6 rounded-xl text-center max-w-lg mt-10">
+    <div id="ui-layer" class="flex flex-col items-center justify-center p-4 sm:p-6 text-white pointer-events-none relative">
+        <!-- Back/Exit Button -->
+        <button id="exit-btn" class="absolute top-4 left-4 glass-panel hover:bg-red-600/80 text-white font-bold py-2 px-4 rounded-lg transition pointer-events-auto z-50">
+            ← Exit Game
+        </button>
+
+        <div id="menu-panel" class="glass-panel p-6 rounded-xl text-center max-w-lg mt-10 transition-opacity duration-300">
             <h1 class="text-3xl font-black text-orange-500 mb-2">XR HEADSET MODE</h1>
             <p class="text-gray-300">Put on your VR Headset and click the "ENTER VR" button at the bottom of the screen.</p>
             <p class="text-gray-400 text-sm mt-4">Use your VR controllers or hand tracking. Pull the trigger (or pinch) to grab the ball. Throw using real physics!</p>
@@ -77,7 +82,11 @@ const VRButton = {
                     let currentSession = null;
                     button.onclick = () => {
                         if ( currentSession === null ) {
-                            navigator.xr.requestSession( 'immersive-vr', { optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'] } ).then( ( session ) => {
+                            // Added dom-overlay so the exit button is clickable in VR if supported
+                            navigator.xr.requestSession( 'immersive-vr', { 
+                                optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking', 'dom-overlay'],
+                                domOverlay: { root: document.body }
+                            } ).then( ( session ) => {
                                 session.addEventListener( 'end', () => {
                                     button.textContent = 'ENTER VR';
                                     currentSession = null;
@@ -251,6 +260,21 @@ class GameEngine {
 
     initDOM() {
         this.container = document.getElementById('game-container');
+        this.menuPanel = document.getElementById('menu-panel');
+        
+        // Setup the exit button functionality
+        document.getElementById('exit-btn').addEventListener('click', () => {
+            // End VR session if active
+            if (this.renderer.xr.isPresenting) {
+                this.renderer.xr.getSession().end();
+            }
+            // Reset the game back to the menu
+            this.state = 'MENU';
+            this.score = 0;
+            this.timeLeft = 60;
+            this.resetBall();
+            this.updateUI();
+        });
     }
 
     init3D() {
@@ -259,8 +283,8 @@ class GameEngine {
         this.scene.fog = new THREE.FogExp2(0x1a1a2e, 0.02);
 
         this.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
-        this.camera.position.set(0, 2.5, 6);
-        this.camera.lookAt(0, 2, -4);
+        this.camera.position.set(0, 2.0, 5);
+        this.camera.lookAt(0, 1.5, -3);
 
         this.renderer = new THREE.WebGLRenderer({ antialias: true });
         this.renderer.setSize(window.innerWidth, window.innerHeight);
@@ -331,13 +355,18 @@ class GameEngine {
         floorBody.quaternion.setFromAxisAngle(new CANNON.Vec3(1,0,0), -Math.PI/2);
         this.world.addBody(floorBody);
 
-        // 2. Backboard
+        // 3. Hoop (Rim) - Adjusted to be LOWER and MUCH CLOSER
+        this.hoopY = 2.2; 
+        this.hoopZ = -1.5; // Made much closer (Originally -2.8, before that -3.9)
+        this.hoopRadius = 0.25;
+
+        // 2. Backboard - Moved accordingly based on new hoop coordinates
         const bbGeo = new THREE.BoxGeometry(1.8, 1.2, 0.1);
         const bbMat = new THREE.MeshStandardMaterial({ 
             color: 0xffffff, transparent: true, opacity: 0.7, roughness: 0.1 
         });
         const bbMesh = new THREE.Mesh(bbGeo, bbMat);
-        bbMesh.position.set(0, 3.5, -4.5);
+        bbMesh.position.set(0, 2.7, -2.1);
         bbMesh.castShadow = true;
         this.scene.add(bbMesh);
 
@@ -353,20 +382,16 @@ class GameEngine {
         const targetGeo = new THREE.PlaneGeometry(0.6, 0.45);
         const targetMat = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide });
         const targetMesh = new THREE.Mesh(targetGeo, targetMat);
-        targetMesh.position.set(0, 3.2, -4.44);
+        targetMesh.position.set(0, 2.4, -2.04);
         this.scene.add(targetMesh);
 
         const innerTargetGeo = new THREE.PlaneGeometry(0.55, 0.4);
         const innerTargetMat = new THREE.MeshBasicMaterial({ color: 0x222222, side: THREE.DoubleSide });
         const innerTargetMesh = new THREE.Mesh(innerTargetGeo, innerTargetMat);
-        innerTargetMesh.position.set(0, 3.2, -4.43);
+        innerTargetMesh.position.set(0, 2.4, -2.03);
         this.scene.add(innerTargetMesh);
 
-        // 3. Hoop (Rim)
-        this.hoopY = 3.0;
-        this.hoopZ = -3.9;
-        this.hoopRadius = 0.25;
-
+        // Render Hoop
         const rimGeo = new THREE.TorusGeometry(this.hoopRadius, 0.03, 8, 24);
         const rimMat = new THREE.MeshStandardMaterial({ color: 0xff3300, roughness: 0.4 });
         const rimMesh = new THREE.Mesh(rimGeo, rimMat);
@@ -392,7 +417,7 @@ class GameEngine {
         const bracketGeo = new THREE.BoxGeometry(0.1, 0.1, 0.4);
         const bracketMat = new THREE.MeshStandardMaterial({ color: 0x333333 });
         const bracketMesh = new THREE.Mesh(bracketGeo, bracketMat);
-        bracketMesh.position.set(0, this.hoopY, -4.25);
+        bracketMesh.position.set(0, this.hoopY, -1.85);
         this.scene.add(bracketMesh);
 
         // 4. Basketball
@@ -406,7 +431,7 @@ class GameEngine {
         this.scene.add(this.ballMesh);
 
         this.ballBody = new CANNON.Body({
-            mass: 0.6, // kg
+            mass: 0.1, // kg (made lightweight)
             shape: new CANNON.Sphere(ballRadius),
             material: this.physicsMaterial,
             linearDamping: 0.1,
@@ -450,8 +475,8 @@ class GameEngine {
         const uiMat = new THREE.MeshBasicMaterial({ map: this.uiTexture, transparent: true });
         this.uiMesh = new THREE.Mesh(uiGeo, uiMat);
         
-        // Place the scoreboard above and slightly behind the backboard
-        this.uiMesh.position.set(0, 5.0, -4.6); 
+        // Place the scoreboard above and slightly behind the new lower backboard
+        this.uiMesh.position.set(0, 4.2, -2.2); 
         this.scene.add(this.uiMesh);
     }
 
@@ -541,7 +566,7 @@ class GameEngine {
         this.isGrabbing = false;
         
         // Restore mass and wake up the physics body
-        this.ballBody.mass = 0.6;
+        this.ballBody.mass = 0.1; // Lightweight ball
         this.ballBody.type = CANNON.Body.DYNAMIC;
         this.ballBody.updateMassProperties();
         this.ballBody.wakeUp();
@@ -556,7 +581,7 @@ class GameEngine {
     }
 
     resetBall() {
-        this.ballBody.position.set(0, 1.5, 2);
+        this.ballBody.position.set(0, 1.2, 1.5); // Bring initial spawn closer/lower too
         this.ballBody.velocity.set(0, 0, 0);
         this.ballBody.angularVelocity.set(0, 0, 0);
         this.isGrabbing = false;
@@ -578,6 +603,13 @@ class GameEngine {
     }
 
     updateUI() {
+        // Toggle 2D HTML Elements
+        if(this.state === 'MENU') {
+            this.menuPanel.style.opacity = '1';
+        } else {
+            this.menuPanel.style.opacity = '0';
+        }
+
         if (!this.uiCtx) return;
         
         // Clear 3D Canvas
