@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>One Minute Hoops</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Three.js for 3D Rendering -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    
+    <!-- Cannon.js for 3D Physics -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cannon.js/0.6.2/cannon.min.js"></script>
+
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #111; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; touch-action: none; }
+        #game-container { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; }
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; pointer-events: none; }
+        .pointer-events-auto { pointer-events: auto; }
+        
+        /* Video for MediaPipe (Hidden visually but needs to be in DOM) */
+        #input_video { display: none; position: absolute; width: 320px; height: 240px; }
+        
+        .glass-panel {
+            background: rgba(20, 25, 30, 0.7);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 3D Canvas -->
+    <div id="game-container"></div>
+    
+    <!-- UI Layer -->
+    <div id="ui-layer" class="flex flex-col items-center justify-center p-4 sm:p-6 text-white pointer-events-none">
+        <div class="glass-panel p-6 rounded-xl text-center max-w-lg mt-10">
+            <h1 class="text-3xl font-black text-orange-500 mb-2">XR HEADSET MODE</h1>
+            <p class="text-gray-300">Put on your VR Headset and click the "ENTER VR" button at the bottom of the screen.</p>
+            <p class="text-gray-400 text-sm mt-4">Use your VR controllers or hand tracking. Pull the trigger (or pinch) to grab the ball. Throw using real physics!</p>
+        </div>
+    </div>
+
+<script>
+/**
+ * ONE MINUTE HOOPS - Main Application Logic
+ * Implements Three.js rendering, Cannon.js physics, and WebXR input
+ */
+
+// --- Inline VRButton Utility (Avoids CDN ReferenceErrors) ---
+const VRButton = {
+    createButton: function ( renderer ) {
+        const button = document.createElement( 'button' );
+        button.style.position = 'absolute';
+        button.style.bottom = '20px';
+        button.style.left = 'calc(50% - 75px)';
+        button.style.width = '150px';
+        button.style.padding = '12px 6px';
+        button.style.border = '1px solid #fff';
+        button.style.borderRadius = '4px';
+        button.style.background = 'rgba(0,0,0,0.5)';
+        button.style.color = '#fff';
+        button.style.font = 'bold 14px sans-serif';
+        button.style.textAlign = 'center';
+        button.style.cursor = 'pointer';
+        button.style.zIndex = '999';
+        button.style.transition = 'background 0.2s';
+        button.textContent = 'ENTER VR';
+
+        button.onmouseenter = function () { button.style.background = 'rgba(234, 88, 12, 0.8)'; }; // Orange hover
+        button.onmouseleave = function () { button.style.background = 'rgba(0,0,0,0.5)'; };
+
+        if ( 'xr' in navigator ) {
+            navigator.xr.isSessionSupported( 'immersive-vr' ).then( ( supported ) => {
+                if ( supported ) {
+                    let currentSession = null;
+                    button.onclick = () => {
+                        if ( currentSession === null ) {
+                            navigator.xr.requestSession( 'immersive-vr', { optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'] } ).then( ( session ) => {
+                                session.addEventListener( 'end', () => {
+                                    button.textContent = 'ENTER VR';
+                                    currentSession = null;
+                                } );
+                                renderer.xr.setSession( session );
+                                button.textContent = 'EXIT VR';
+                                currentSession = session;
+                            } );
+                        } else {
+                            currentSession.end();
+                        }
+                    };
+                } else {
+                    button.textContent = 'VR NOT SUPPORTED';
+                    button.style.cursor = 'auto';
+                    button.onmouseenter = null;
+                    button.onmouseleave = null;
+                    button.onclick = null;
+                }
+            } );
+        } else {
+            button.textContent = 'WEBXR NOT AVAILABLE';
+            button.style.cursor = 'auto';
+            button.onmouseenter = null;
+            button.onmouseleave = null;
+        }
+        return button;
+    }
+};
+
+// --- 1. Audio System (Synthesized via Web Audio API) ---
+const AudioSystem = {
+    ctx: new (window.AudioContext || window.webkitAudioContext)(),
+    
+    playTone(freq, type, duration, vol) {
+        if(this.ctx.state === 'suspended') this.ctx.resume();
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
+        gain.gain.setValueAtTime(vol, this.ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + duration);
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start();
+        osc.stop(this.ctx.currentTime + duration);
+    },
+
+    playBounce() {
+        this.playTone(150, 'sine', 0.2, 0.5);
+        setTimeout(() => this.playTone(80, 'triangle', 0.1, 0.3), 20);
+    },
+
+    playSwish() {
+        // White noise approximation for net swish
+        if(this.ctx.state === 'suspended') this.ctx.resume();
+        const bufferSize = this.ctx.sampleRate * 0.5; 
+        const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) {
+            data[i] = Math.random() * 2 - 1;
+        }
+        const noise = this.ctx.createBufferSource();
+        noise.buffer = buffer;
+        
+        // Filter to sound like a net
+        const bandpass = this.ctx.createBiquadFilter();
+        bandpass.type = 'bandpass';
+        bandpass.frequency.value = 1000;
+        
+        const gain = this.ctx.createGain();
+        gain.gain.setValueAtTime(0.5, this.ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.5);
+        
+        noise.connect(bandpass);
+        bandpass.connect(gain);
+        gain.connect(this.ctx.destination);
+        noise.start();
+    },
+
+    playBuzzer() {
+        this.playTone(200, 'sawtooth', 1.0, 0.3);
+        this.playTone(205, 'sawtooth', 1.0, 0.3); // Dissonance
+    }
+};
+
+// --- 2. Procedural Textures ---
+const TextureGen = {
+    createWood() {
+        const canvas = document.createElement('canvas');
+        canvas.width = 512; canvas.height = 512;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#d2a679';
+        ctx.fillRect(0, 0, 512, 512);
+        
+        // Planks
+        for(let i=0; i<512; i+=32) {
+            ctx.beginPath();
+            ctx.moveTo(i, 0);
+            ctx.lineTo(i, 512);
+            ctx.strokeStyle = '#b3804d';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        }
+        // Court lines (simplified)
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 8;
+        ctx.beginPath(); ctx.moveTo(0, 100); ctx.lineTo(512, 100); ctx.stroke();
+        
+        return new THREE.CanvasTexture(canvas);
+    },
+
+    createBasketball() {
+        const canvas = document.createElement('canvas');
+        canvas.width = 512; canvas.height = 512;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#e66a15'; // Orange
+        ctx.fillRect(0, 0, 512, 512);
+        
+        // Bump noise
+        for(let i=0; i<10000; i++) {
+            ctx.fillStyle = Math.random() > 0.5 ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.05)';
+            ctx.fillRect(Math.random()*512, Math.random()*512, 2, 2);
+        }
+
+        ctx.strokeStyle = '#222';
+        ctx.lineWidth = 8;
+        // Horizontal
+        ctx.beginPath(); ctx.moveTo(0, 256); ctx.lineTo(512, 256); ctx.stroke();
+        // Vertical
+        ctx.beginPath(); ctx.moveTo(256, 0); ctx.lineTo(256, 512); ctx.stroke();
+        // Arcs
+        ctx.beginPath(); ctx.arc(0, 256, 180, -Math.PI/2, Math.PI/2); ctx.stroke();
+        ctx.beginPath(); ctx.arc(512, 256, 180, Math.PI/2, -Math.PI/2); ctx.stroke();
+
+        return new THREE.CanvasTexture(canvas);
+    }
+};
+
+// --- 3. Game Engine (Three + Cannon) ---
+class GameEngine {
+    constructor() {
+        this.state = 'LOADING'; // LOADING, MENU, PLAYING, GAMEOVER
+        this.score = 0;
+        this.timeLeft = 60;
+        this.lastTime = performance.now();
+        this.inputMode = 'mouse'; // 'camera' or 'mouse'
+        this.isGrabbing = false;
+        
+        // Track previous ball Y for scoring logic
+        this.prevBallY = 0;
+        this.scoreCooldown = 0;
+
+        // Hand/Virtual Hand state
+        this.handPos = new THREE.Vector3(0, 1.5, 2);
+        this.handVelocity = new THREE.Vector3(0, 0, 0);
+        this.handHistory = [];
+        this.activeController = null; // Tracks which VR hand is holding the ball
+
+        this.initDOM();
+        this.init3D();
+        this.initPhysics();
+        this.buildScene();
+        this.build3DUI();
+        this.initInput();
+        
+        // Initial state
+        this.state = 'MENU';
+        this.updateUI();
+    }
+
+    initDOM() {
+        this.container = document.getElementById('game-container');
+    }
+
+    init3D() {
+        this.scene = new THREE.Scene();
+        this.scene.background = new THREE.Color(0x1a1a2e);
+        this.scene.fog = new THREE.FogExp2(0x1a1a2e, 0.02);
+
+        this.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
+        this.camera.position.set(0, 2.5, 6);
+        this.camera.lookAt(0, 2, -4);
+
+        this.renderer = new THREE.WebGLRenderer({ antialias: true });
+        this.renderer.setSize(window.innerWidth, window.innerHeight);
+        this.renderer.shadowMap.enabled = true;
+        this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        this.container.appendChild(this.renderer.domElement);
+
+        // Lights
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        this.scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(5, 10, 5);
+        dirLight.castShadow = true;
+        dirLight.shadow.mapSize.width = 1024;
+        dirLight.shadow.mapSize.height = 1024;
+        this.scene.add(dirLight);
+
+        const hoopLight = new THREE.PointLight(0xff8800, 1.0, 10);
+        hoopLight.position.set(0, 4, -4);
+        this.scene.add(hoopLight);
+
+        window.addEventListener('resize', () => {
+            this.camera.aspect = window.innerWidth / window.innerHeight;
+            this.camera.updateProjectionMatrix();
+            this.renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Enable WebXR
+        this.renderer.xr.enabled = true;
+        document.body.appendChild(VRButton.createButton(this.renderer));
+        
+        // Tell Three.js to handle the animation loop automatically for VR
+        this.renderer.setAnimationLoop(() => this.animate());
+    }
+
+    initPhysics() {
+        this.world = new CANNON.World();
+        this.world.gravity.set(0, -9.82, 0);
+        this.world.broadphase = new CANNON.NaiveBroadphase();
+        this.world.solver.iterations = 10;
+
+        // Materials
+        this.physicsMaterial = new CANNON.Material("standard");
+        const physicsContactMaterial = new CANNON.ContactMaterial(
+            this.physicsMaterial,
+            this.physicsMaterial,
+            { friction: 0.4, restitution: 0.7 }
+        );
+        this.world.addContactMaterial(physicsContactMaterial);
+        
+        this.physicsBodies = [];
+    }
+
+    buildScene() {
+        // 1. Court Floor
+        const floorGeo = new THREE.PlaneGeometry(20, 20);
+        const floorMat = new THREE.MeshStandardMaterial({ 
+            map: TextureGen.createWood(),
+            roughness: 0.8 
+        });
+        const floorMesh = new THREE.Mesh(floorGeo, floorMat);
+        floorMesh.rotation.x = -Math.PI / 2;
+        floorMesh.receiveShadow = true;
+        this.scene.add(floorMesh);
+
+        const floorBody = new CANNON.Body({ mass: 0, shape: new CANNON.Plane(), material: this.physicsMaterial });
+        floorBody.quaternion.setFromAxisAngle(new CANNON.Vec3(1,0,0), -Math.PI/2);
+        this.world.addBody(floorBody);
+
+        // 2. Backboard
+        const bbGeo = new THREE.BoxGeometry(1.8, 1.2, 0.1);
+        const bbMat = new THREE.MeshStandardMaterial({ 
+            color: 0xffffff, transparent: true, opacity: 0.7, roughness: 0.1 
+        });
+        const bbMesh = new THREE.Mesh(bbGeo, bbMat);
+        bbMesh.position.set(0, 3.5, -4.5);
+        bbMesh.castShadow = true;
+        this.scene.add(bbMesh);
+
+        const bbBody = new CANNON.Body({ 
+            mass: 0, 
+            shape: new CANNON.Box(new CANNON.Vec3(0.9, 0.6, 0.05)),
+            material: this.physicsMaterial
+        });
+        bbBody.position.copy(bbMesh.position);
+        this.world.addBody(bbBody);
+
+        // Backboard target square
+        const targetGeo = new THREE.PlaneGeometry(0.6, 0.45);
+        const targetMat = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide });
+        const targetMesh = new THREE.Mesh(targetGeo, targetMat);
+        targetMesh.position.set(0, 3.2, -4.44);
+        this.scene.add(targetMesh);
+
+        const innerTargetGeo = new THREE.PlaneGeometry(0.55, 0.4);
+        const innerTargetMat = new THREE.MeshBasicMaterial({ color: 0x222222, side: THREE.DoubleSide });
+        const innerTargetMesh = new THREE.Mesh(innerTargetGeo, innerTargetMat);
+        innerTargetMesh.position.set(0, 3.2, -4.43);
+        this.scene.add(innerTargetMesh);
+
+        // 3. Hoop (Rim)
+        this.hoopY = 3.0;
+        this.hoopZ = -3.9;
+        this.hoopRadius = 0.25;
+
+        const rimGeo = new THREE.TorusGeometry(this.hoopRadius, 0.03, 8, 24);
+        const rimMat = new THREE.MeshStandardMaterial({ color: 0xff3300, roughness: 0.4 });
+        const rimMesh = new THREE.Mesh(rimGeo, rimMat);
+        rimMesh.rotation.x = -Math.PI / 2;
+        rimMesh.position.set(0, this.hoopY, this.hoopZ);
+        rimMesh.castShadow = true;
+        this.scene.add(rimMesh);
+
+        // Physics Rim (approximate with boxes to allow ball through center)
+        for(let i=0; i<8; i++) {
+            const angle = (i / 8) * Math.PI * 2;
+            const hx = Math.cos(angle) * this.hoopRadius;
+            const hz = Math.sin(angle) * this.hoopRadius;
+            const boxShape = new CANNON.Box(new CANNON.Vec3(0.04, 0.03, 0.1));
+            const rimBody = new CANNON.Body({ mass: 0, material: this.physicsMaterial });
+            rimBody.addShape(boxShape);
+            rimBody.position.set(hx, this.hoopY, this.hoopZ + hz);
+            rimBody.quaternion.setFromAxisAngle(new CANNON.Vec3(0,1,0), -angle);
+            this.world.addBody(rimBody);
+        }
+
+        // Support bracket
+        const bracketGeo = new THREE.BoxGeometry(0.1, 0.1, 0.4);
+        const bracketMat = new THREE.MeshStandardMaterial({ color: 0x333333 });
+        const bracketMesh = new THREE.Mesh(bracketGeo, bracketMat);
+        bracketMesh.position.set(0, this.hoopY, -4.25);
+        this.scene.add(bracketMesh);
+
+        // 4. Basketball
+        const ballRadius = 0.12;
+        const ballGeo = new THREE.SphereGeometry(ballRadius, 32, 32);
+        const ballMat = new THREE.MeshStandardMaterial({ 
+            map: TextureGen.createBasketball(), roughness: 0.6 
+        });
+        this.ballMesh = new THREE.Mesh(ballGeo, ballMat);
+        this.ballMesh.castShadow = true;
+        this.scene.add(this.ballMesh);
+
+        this.ballBody = new CANNON.Body({
+            mass: 0.6, // kg
+            shape: new CANNON.Sphere(ballRadius),
+            material: this.physicsMaterial,
+            linearDamping: 0.1,
+            angularDamping: 0.1
+        });
+        
+        // Bounce sound on collision
+        this.ballBody.addEventListener("collide", (e) => {
+            const relVel = e.contact.getImpactVelocityAlongNormal();
+            if(Math.abs(relVel) > 2) AudioSystem.playBounce();
+        });
+
+        this.world.addBody(this.ballBody);
+        this.physicsBodies.push({ mesh: this.ballMesh, body: this.ballBody });
+
+        // 5. Virtual Hand / Pointer Indicator
+        const handGeo = new THREE.SphereGeometry(0.05, 16, 16);
+        const handMat = new THREE.MeshBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.5 });
+        this.virtualHand = new THREE.Mesh(handGeo, handMat);
+        this.scene.add(this.virtualHand);
+
+        // 6. Trajectory Line
+        const trajMat = new THREE.LineBasicMaterial({ color: 0x00ff00, linewidth: 2 });
+        const trajGeo = new THREE.BufferGeometry();
+        this.trajectoryLine = new THREE.Line(trajGeo, trajMat);
+        this.scene.add(this.trajectoryLine);
+        this.trajectoryLine.visible = false; // Hide in VR
+        
+        this.resetBall();
+    }
+
+    build3DUI() {
+        // Create an HTML5 Canvas to act as our 3D Scoreboard texture
+        this.uiCanvas = document.createElement('canvas');
+        this.uiCanvas.width = 1024;
+        this.uiCanvas.height = 512;
+        this.uiCtx = this.uiCanvas.getContext('2d');
+        this.uiTexture = new THREE.CanvasTexture(this.uiCanvas);
+        
+        const uiGeo = new THREE.PlaneGeometry(3, 1.5);
+        const uiMat = new THREE.MeshBasicMaterial({ map: this.uiTexture, transparent: true });
+        this.uiMesh = new THREE.Mesh(uiGeo, uiMat);
+        
+        // Place the scoreboard above and slightly behind the backboard
+        this.uiMesh.position.set(0, 5.0, -4.6); 
+        this.scene.add(this.uiMesh);
+    }
+
+    initInput() {
+        // Setup WebXR Controllers (Handles both Physical Controllers AND Hand Tracking Pinches)
+        const onSelectStart = (event) => {
+            const controller = event.target;
+            
+            if (this.state !== 'PLAYING') {
+                this.startGame();
+                return;
+            }
+
+            // True 3D distance check from controller to ball
+            const dist = controller.position.distanceTo(this.ballBody.position);
+            
+            // Allow grabbing if hand is close to ball OR if ball rolled away on the floor
+            if (dist < 0.8 || this.ballBody.position.y < 0.5) {
+                this.activeController = controller;
+                this.grabBall();
+                controller.children[0].material.color.setHex(0xffaa00);
+            }
+        };
+
+        const onSelectEnd = (event) => {
+            const controller = event.target;
+            
+            if (this.isGrabbing && this.activeController === controller) {
+                // TRUE VR THROW CALCULATION: Pure 1:1 Physics translation
+                if (this.handHistory.length >= 2) {
+                    const newest = this.handHistory[this.handHistory.length - 1];
+                    let oldest = this.handHistory[0];
+                    
+                    // Look back ~80ms to calculate a smooth, accurate release velocity
+                    for (let i = this.handHistory.length - 2; i >= 0; i--) {
+                        if (newest.time - this.handHistory[i].time > 80) {
+                            oldest = this.handHistory[i];
+                            break;
+                        }
+                    }
+                    
+                    const dt = (newest.time - oldest.time) / 1000;
+                    if (dt > 0.01) {
+                        // Exact 3D vector math subtraction (no hacks required in VR)
+                        this.handVelocity.subVectors(newest.pos, oldest.pos).divideScalar(dt);
+                        
+                        // Slightly amplify human throw to account for virtual ball weightlessness
+                        this.handVelocity.multiplyScalar(1.3); 
+                    }
+                } else {
+                    this.handVelocity.set(0, 0, 0); // Dropped
+                }
+                
+                this.releaseBall();
+                controller.children[0].material.color.setHex(0x00ff00);
+                this.activeController = null;
+            }
+        };
+
+        // Initialize both Left (0) and Right (1) hands
+        for (let i = 0; i < 2; i++) {
+            const controller = this.renderer.xr.getController(i);
+            controller.addEventListener('selectstart', onSelectStart);
+            controller.addEventListener('selectend', onSelectEnd);
+            this.scene.add(controller);
+
+            // Attach a small green sphere to represent the player's hands
+            const handGeo = new THREE.SphereGeometry(0.06, 16, 16);
+            const handMat = new THREE.MeshBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.5 });
+            const handMesh = new THREE.Mesh(handGeo, handMat);
+            controller.add(handMesh);
+        }
+    }
+
+    grabBall() {
+        this.isGrabbing = true;
+        // Make ball kinematic-like while holding
+        this.ballBody.mass = 0; 
+        this.ballBody.type = CANNON.Body.KINEMATIC;
+        this.ballBody.updateMassProperties();
+        this.ballBody.velocity.set(0,0,0);
+        this.ballBody.angularVelocity.set(0,0,0);
+    }
+
+    releaseBall() {
+        if(!this.isGrabbing) return;
+        this.isGrabbing = false;
+        
+        // Restore mass and wake up the physics body
+        this.ballBody.mass = 0.6;
+        this.ballBody.type = CANNON.Body.DYNAMIC;
+        this.ballBody.updateMassProperties();
+        this.ballBody.wakeUp();
+
+        // Apply calculated velocity
+        // Cap max velocity to prevent physics breaking
+        this.handVelocity.clampLength(0, 25);
+        this.ballBody.velocity.copy(this.handVelocity);
+        
+        // Add backspin
+        this.ballBody.angularVelocity.set(-this.handVelocity.z * 0.5, 0, 0);
+    }
+
+    resetBall() {
+        this.ballBody.position.set(0, 1.5, 2);
+        this.ballBody.velocity.set(0, 0, 0);
+        this.ballBody.angularVelocity.set(0, 0, 0);
+        this.isGrabbing = false;
+        this.activeController = null;
+    }
+
+    startGame() {
+        this.state = 'PLAYING';
+        this.score = 0;
+        this.timeLeft = 60;
+        this.updateUI();
+        this.resetBall();
+    }
+
+    endGame() {
+        this.state = 'GAMEOVER';
+        AudioSystem.playBuzzer();
+        this.updateUI();
+    }
+
+    updateUI() {
+        if (!this.uiCtx) return;
+        
+        // Clear 3D Canvas
+        this.uiCtx.clearRect(0, 0, 1024, 512);
+        this.uiCtx.fillStyle = 'rgba(20, 25, 30, 0.85)';
+        this.uiCtx.fillRect(0, 0, 1024, 512);
+        
+        this.uiCtx.textAlign = 'center';
+        
+        if (this.state === 'GAMEOVER') {
+            this.uiCtx.fillStyle = '#ff3300';
+            this.uiCtx.font = 'bold 100px Arial';
+            this.uiCtx.fillText("TIME'S UP!", 512, 180);
+            
+            this.uiCtx.fillStyle = '#ffffff';
+            this.uiCtx.font = 'bold 70px Arial';
+            this.uiCtx.fillText(`Final Score: ${this.score}`, 512, 320);
+            
+            this.uiCtx.fillStyle = '#aaaaaa';
+            this.uiCtx.font = '40px Arial';
+            this.uiCtx.fillText("Pull trigger to play again", 512, 420);
+        } else {
+            // Headers
+            this.uiCtx.fillStyle = '#aaaaaa';
+            this.uiCtx.font = 'bold 40px Arial';
+            this.uiCtx.fillText("SCORE", 256, 100);
+            this.uiCtx.fillText("TIME", 768, 100);
+            
+            // Values
+            this.uiCtx.fillStyle = '#ffaa00';
+            this.uiCtx.font = 'bold 150px Arial';
+            this.uiCtx.fillText(this.score.toString(), 256, 280);
+            
+            const m = Math.floor(this.timeLeft / 60).toString().padStart(2, '0');
+            const s = Math.floor(this.timeLeft % 60).toString().padStart(2, '0');
+            
+            // Flash red under 10 seconds
+            this.uiCtx.fillStyle = this.timeLeft <= 10 ? '#ff3300' : '#ffffff';
+            this.uiCtx.fillText(`${m}:${s}`, 768, 280);
+
+            if (this.state === 'MENU' || this.state === 'LOADING') {
+                this.uiCtx.fillStyle = '#00ff00';
+                this.uiCtx.font = 'bold 50px Arial';
+                this.uiCtx.fillText("PULL TRIGGER TO START", 512, 440);
+            }
+        }
+        
+        // Notify Three.js that the texture has changed so it re-renders the scoreboard
+        this.uiTexture.needsUpdate = true;
+    }
+
+    showScoreEffect() {
+        AudioSystem.playSwish();
+        // Subtle visual flash in VR
+        this.scene.background.setHex(0x2a1a1e);
+        setTimeout(() => this.scene.background.setHex(0x1a1a2e), 200);
+    }
+
+    animate() {
+        const now = performance.now();
+        // Cap physics delta time so lag spikes don't shoot the ball into orbit
+        const dt = Math.min((now - this.lastTime) / 1000, 0.1); 
+        this.lastTime = now;
+
+        if (this.state === 'PLAYING') {
+            // Timer Logic
+            this.timeLeft -= dt;
+            if (this.timeLeft <= 0) {
+                this.timeLeft = 0;
+                this.endGame();
+            }
+            
+            // Update the 3D Scoreboard UI occasionally (optimizes performance)
+            if (Math.floor(now / 500) % 2 === 0) this.updateUI();
+
+            // Physics Step
+            this.world.step(1/60, dt, 3);
+
+            // Sync Visual Meshes to Physics Engine
+            for(let {mesh, body} of this.physicsBodies) {
+                mesh.position.copy(body.position);
+                mesh.quaternion.copy(body.quaternion);
+            }
+
+            // Track Active VR Controller for Throw Physics
+            if (this.isGrabbing && this.activeController) {
+                this.handPos.copy(this.activeController.position);
+                
+                this.ballBody.position.copy(this.handPos);
+                this.ballBody.velocity.set(0,0,0);
+                this.ballBody.angularVelocity.set(0,0,0);
+                
+                // Keep history of controller position to calculate velocity on release
+                this.handHistory.push({ time: performance.now(), pos: this.handPos.clone() });
+                if(this.handHistory.length > 15) this.handHistory.shift();
+            }
+
+            // Scoring Logic
+            if(this.scoreCooldown > 0) this.scoreCooldown -= dt;
+            
+            const by = this.ballBody.position.y;
+            const bx = this.ballBody.position.x;
+            const bz = this.ballBody.position.z;
+
+            // Check if ball crossed hoop downwards
+            if (this.prevBallY > this.hoopY && by <= this.hoopY && !this.isGrabbing && this.scoreCooldown <= 0) {
+                // Check XZ distance to center of hoop
+                const distToCenter = Math.hypot(bx - 0, bz - this.hoopZ);
+                if (distToCenter < this.hoopRadius + 0.05) {
+                    this.score++;
+                    this.scoreCooldown = 1.0;
+                    this.showScoreEffect();
+                    this.updateUI();
+                }
+            }
+            this.prevBallY = by;
+
+            // Reset Rules
+            if (!this.isGrabbing) {
+                // Out of bounds
+                if (by < -1 || Math.abs(bx) > 10 || bz > 5 || bz < -10) {
+                    this.resetBall();
+                }
+                // Stopped on floor
+                if (by < 0.2 && this.ballBody.velocity.lengthSquared() < 0.1 && this.scoreCooldown <= 0) {
+                    setTimeout(() => { if(!this.isGrabbing) this.resetBall() }, 1000);
+                }
+                // Fast return after score
+                if(this.scoreCooldown > 0 && by < this.hoopY - 1.0) {
+                    this.resetBall();
+                }
+            }
+        }
+
+        this.renderer.render(this.scene, this.camera);
+    }
+}
+
+// Start Application
+window.onload = () => {
+    window.game = new GameEngine();
+};
+</script>
+</body>
+</html>
